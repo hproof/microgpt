@@ -15,7 +15,7 @@ import pickle
 import time
 random.seed(int(time.time()))  # 使用时间种子，每次运行随机
 input_fname = "./input.txt"
-checkpoint_file = "./model.checkpoint"
+checkpoint_file = "./models/microgpt.checkpoint"
 
 
 # =====================================
@@ -173,6 +173,7 @@ print(f"num params: {len(params)}")
 # 检查点保存与加载
 def save_checkpoint():
     """将模型参数保存到检查点文件"""
+    os.makedirs(os.path.dirname(checkpoint_file), exist_ok=True)
     data = {k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()}
     with open(checkpoint_file, 'wb') as f:
         pickle.dump({'state_dict': data, 'uchars': uchars, 'vocab_size': vocab_size, 'BOS': BOS}, f)

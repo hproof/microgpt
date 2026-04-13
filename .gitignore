@@ -32,7 +32,7 @@ Thumbs.db
 htmlcov/
 
 # Model checkpoints
-model.checkpoint
+models/
 
 # Logs
 *.log
