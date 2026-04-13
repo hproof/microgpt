@@ -9,9 +9,12 @@ import os
 import math
 import random
 import urllib.request
+import argparse
+import pickle
 
 random.seed(11)
 input_fname = "./input.txt"
+checkpoint_file = "./model.checkpoint"
 
 
 # =====================================
@@ -162,8 +165,30 @@ for i in range(n_layer):
     state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)  # 前馈网络第一层（扩展维度）
     state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)  # 前馈网络第二层（压缩回原维度）
 
-params = [ p for max in state_dict.values() for row in max for p in row ] # 将所有参数矩阵中的 Value 对象展平为一个列表
+params = [ p for mat in state_dict.values() for row in mat for p in row ] # 将所有参数矩阵中的 Value 对象展平为一个列表
 print(f"num params: {len(params)}")
+
+# =====================================
+# 检查点保存与加载
+def save_checkpoint():
+    """将模型参数保存到检查点文件"""
+    data = {k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()}
+    with open(checkpoint_file, 'wb') as f:
+        pickle.dump({'state_dict': data, 'uchars': uchars, 'vocab_size': vocab_size, 'BOS': BOS}, f)
+    print(f"checkpoint saved to {checkpoint_file}")
+
+def load_checkpoint():
+    """从检查点文件加载模型参数"""
+    if not os.path.exists(checkpoint_file):
+        return False
+    with open(checkpoint_file, 'rb') as f:
+        ckpt = pickle.load(f)
+    for k, mat_data in ckpt['state_dict'].items():
+        for i, row in enumerate(mat_data):
+            for j, val in enumerate(row):
+                state_dict[k][i][j].data = val
+    print(f"checkpoint loaded from {checkpoint_file}")
+    return True
 
 # =====================================
 # 架构
@@ -232,43 +257,102 @@ def gpt( token_id, pos_id, keys, values ):
 
 # =====================================
 # 循环训练
-learning_rate = 0.01                # 学习率, 控制参数更新的步长
-beta1 = 0.85                        # Adam 优化器的第一个动量衰减率，控制一阶矩估计的指数衰减
-beta2 = 0.99                        # Adam 优化器的第二个动量衰减率，控制二阶矩估计的指数衰减
-eps_adam = 1e-8                     # Adam 优化器的数值稳定性常数，防止除以零
-m = [0.0] * len(params)             # Adam 优化器的一阶矩缓冲区，初始化为全零，模拟惯性, 之前向右走， 现在也倾向于向右走
-v = [0.0] * len(params)             # Adam 优化器的二阶矩缓冲区，初始化为全零，梯度大的少走， 梯度的的多走
+def train(num_steps=1000):
+    """训练模型"""
+    learning_rate = 0.01                # 学习率, 控制参数更新的步长
+    beta1 = 0.85                        # Adam 优化器的第一个动量衰减率，控制一阶矩估计的指数衰减
+    beta2 = 0.99                        # Adam 优化器的第二个动量衰减率，控制二阶矩估计的指数衰减
+    eps_adam = 1e-8                     # Adam 优化器的数值稳定性常数，防止除以零
+    m = [0.0] * len(params)             # Adam 优化器的一阶矩缓冲区，初始化为全零，模拟惯性, 之前向右走， 现在也倾向于向右走
+    v = [0.0] * len(params)             # Adam 优化器的二阶矩缓冲区，初始化为全零，梯度大的少走， 梯度的的多走
 
-num_steps = 1000 # 训练步骤数
-for step in range(num_steps):
+    for step in range(num_steps):
 
-    # 获取样本
-    doc = docs[ step % len(docs) ]  # 获取当前训练样本
-    tokens = [BOS] + [uchars.index(c) for c in doc]  # 将文本转换为 token id 列表，前面加上 BOS 标记
-    n = min(block_size, len(tokens) - 1)  # 计算当前样本的有效长度，不能超过 block_size
+        # 获取样本
+        doc = docs[ step % len(docs) ]  # 获取当前训练样本
+        tokens = [BOS] + [uchars.index(c) for c in doc] + [BOS]  # 将样本转换为 token id，并在两端添加 BOS 特殊符号
+        n = min(block_size, len(tokens) - 1)  # 计算当前样本的有效长度，不能超过 block_size
 
-    # 向前传播
-    keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]  # 初始化每层的 keys 和 values 列表
-    losses = []  # 存储每个位置的损失
-    for pos_id in range(n):
-        token_id, target_id = tokens[pos_id], tokens[pos_id + 1]  # 获取当前输入 token id 和目标 token id
-        logits = gpt(token_id, pos_id, keys, values)  # 前向传播，得到 logits
-        probs = softmax(logits)  # 对 logits 进行 softmax，得到预测的概率分布
-        loss_t = -probs[target_id].log()  # 计算当前时间步的损失，使用交叉熵损失
-        losses.append(loss_t)  # 将当前时间步的损失添加到 losses 列表中
-    loss = sum(losses) / n  # 计算当前样本的平均损失
+        # 向前传播
+        keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]  # 初始化每层的 keys 和 values 列表
+        losses = []  # 存储每个位置的损失
+        for pos_id in range(n):
+            token_id, target_id = tokens[pos_id], tokens[pos_id + 1]  # 获取当前输入 token id 和目标 token id
+            logits = gpt(token_id, pos_id, keys, values)  # 前向传播，得到 logits
+            probs = softmax(logits)  # 对 logits 进行 softmax，得到预测的概率分布
+            loss_t = -probs[target_id].log()  # 计算当前时间步的损失，使用交叉熵损失
+            losses.append(loss_t)  # 将当前时间步的损失添加到 losses 列表中
+        loss = sum(losses) / n  # 计算当前样本的平均损失
 
-    # 反向传播，计算所有参数的梯度
-    loss.backward()  
+        # 反向传播，计算所有参数的梯度
+        loss.backward()
 
-    # Adam 优化器更新参数
-    lr_t = learning_rate * (1 - step / num_steps)  # 学习率衰减，随着训练步骤增加，学习率逐渐减小
-    for i, p in enumerate(params):
-        m[i] = beta1 * m[i] + (1 - beta1) * p.grad  # 更新一阶矩估计
-        v[i] = beta2 * v[i] + (1 - beta2) * p.grad ** 2  # 更新二阶矩估计
-        m_hat = m[i] / (1 - beta1 ** (step + 1))  # 计算一阶矩的偏差修正
-        v_hat = v[i] / (1 - beta2 ** (step + 1))  # 计算二阶矩的偏差修正
-        p.data -= lr_t * m_hat / (v_hat ** 0.5 + eps_adam)  # 更新参数，使用 Adam 的更新规则
-        p.grad = 0  # 清零梯度，为下一次迭代做准备
+        # Adam 优化器更新参数
+        lr_t = learning_rate * (1 - step / num_steps)  # 学习率衰减，随着训练步骤增加，学习率逐渐减小
+        for i, p in enumerate(params):
+            m[i] = beta1 * m[i] + (1 - beta1) * p.grad  # 更新一阶矩估计
+            v[i] = beta2 * v[i] + (1 - beta2) * p.grad ** 2  # 更新二阶矩估计
+            m_hat = m[i] / (1 - beta1 ** (step + 1))  # 计算一阶矩的偏差修正
+            v_hat = v[i] / (1 - beta2 ** (step + 1))  # 计算二阶矩的偏差修正
+            p.data -= lr_t * m_hat / (v_hat ** 0.5 + eps_adam)  # 更新参数，使用 Adam 的更新规则
+            p.grad = 0  # 清零梯度，为下一次迭代做准备
 
-    print( f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}")  # 打印当前训练步骤和损失值
+        print( f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}")  # 打印当前训练步骤和损失值
+
+    # 训练结束后自动保存
+    save_checkpoint()
+    print("training complete!")
+
+# ================================
+# 推理
+def infer(num_samples=20, temperature=0.5):
+    """推理：生成名字"""
+    # 如果没有检查点，先训练
+    if not os.path.exists(checkpoint_file):
+        print("no checkpoint found, training first...")
+        train()
+        print()
+
+    load_checkpoint()
+    print("\n--- inference (new, hallucinated names) ---\n")
+    for sample_idx in range(num_samples):
+        keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]  # 初始化每层的 keys 和 values 列表
+        token_id = BOS  # 从 BOS 开始生成
+        sample = []  # 存储生成的 token id 序列
+        for pos_id in range(block_size):  # 生成长度不超过 block_size 的序列
+            logits = gpt(token_id, pos_id, keys, values)  # 前向传播，得到 logits
+            probs = softmax([l / temperature for l in logits])  # 对 logits 进行温度缩放后再进行 softmax，得到预测的概率分布
+            # 根据概率分布采样下一个 token id，temperature 控制采样的随机性，值越小越倾向于选择概率最高的 token
+            next_token_id = random.choices(range(vocab_size), weights=[p.data for p in probs])[0]  # 从概率分布中随机选择下一个 token id
+            if next_token_id == BOS:  # 如果生成了 BOS，表示生成结束，跳出循环
+                break
+            sample.append(uchars[next_token_id])  # 将生成的 token id 转换为字符，并添加到 sample 列表中
+            token_id = next_token_id  # 更新 token_id 为下一次迭代做准备
+        generated_name = ''.join(sample) # 将生成的字符列表连接成一个字符串，得到生成的名字
+        print(f"sample {sample_idx+1:2d}: {generated_name}")  # 打印生成的名字
+
+# ================================
+# 命令行入口
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="microgpt - 简化的 GPT 实现")
+    parser.add_argument('--mode', '-m', choices=['train', 'infer', 'help'], default='infer',
+                        help='模式: train(训练) / infer(推理) / help(帮助, 默认)')
+    parser.add_argument('--steps', '-s', type=int, default=1000,
+                        help='训练步数 (默认 1000)')
+    parser.add_argument('--samples', type=int, default=20,
+                        help='推理时生成样本数 (默认 20)')
+    parser.add_argument('--temp', '-t', type=float, default=0.5,
+                        help='推理温度 (默认 0.5)')
+    args = parser.parse_args()
+
+    if args.mode == 'help':
+        parser.print_help()
+        print("\n示例:")
+        print("  python my_microgpt.py --mode infer        # 推理(如无模型则先训练)")
+        print("  python my_microgpt.py --mode train         # 训练模型")
+        print("  python my_microgpt.py --mode train -s 500 # 训练 500 步")
+        print("  python my_microgpt.py --mode infer -s 10  # 生成 10 个样本")
+    elif args.mode == 'train':
+        train(args.steps)
+    elif args.mode == 'infer':
+        infer(args.samples, args.temp)
