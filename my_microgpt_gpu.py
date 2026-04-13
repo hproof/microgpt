@@ -66,7 +66,7 @@ class TorchGPT(nn.Module):
             dropout=0.0,
             activation="gelu",
             batch_first=True,
-            norm_first=True,
+            norm_first=False,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layer)
         self.final_norm = nn.LayerNorm(n_embd)
@@ -79,10 +79,10 @@ class TorchGPT(nn.Module):
 
         self.apply(self._init_weights)
 
-        # 缓存最大长度的 causal mask
+        # 缓存最大长度的 causal mask（bool，True 表示需要屏蔽）
         self.register_buffer(
             "causal_mask",
-            nn.Transformer.generate_square_subsequent_mask(block_size),
+            torch.triu(torch.ones(block_size, block_size, dtype=torch.bool), diagonal=1),
             persistent=False,
         )
 
@@ -157,7 +157,7 @@ class TorchGPT(nn.Module):
 
 # =====================================
 # 训练
-def train(num_steps=2000, lr=0.001, batch_size=128):
+def train(num_steps=5000, lr=0.001, batch_size=128):
     """训练模型"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -224,6 +224,12 @@ def train(num_steps=2000, lr=0.001, batch_size=128):
                     targets.reshape(-1),
                     ignore_index=PAD,
                 )
+                with torch.no_grad():
+                    preds = logits.argmax(dim=-1)
+                    mask = targets.ne(PAD)
+                    correct = preds.eq(targets) & mask
+                    acc = correct.sum().float() / mask.sum().clamp_min(1)
+                    acc_value = acc.item()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -236,6 +242,12 @@ def train(num_steps=2000, lr=0.001, batch_size=128):
                 targets.reshape(-1),
                 ignore_index=PAD,
             )
+            with torch.no_grad():
+                preds = logits.argmax(dim=-1)
+                mask = targets.ne(PAD)
+                correct = preds.eq(targets) & mask
+                acc = correct.sum().float() / mask.sum().clamp_min(1)
+                acc_value = acc.item()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -244,7 +256,7 @@ def train(num_steps=2000, lr=0.001, batch_size=128):
 
         interval = 1 if (step + 1) <= 10 else (10 if (step + 1) <= 100 else (100 if (step + 1) <= 1000 else 500))
         if (step + 1) % interval == 0:
-            print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.item():.4f} | lr {scheduler.get_last_lr()[0]:.6f}")
+            print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.item():.4f} | acc {acc_value*100:6.2f}% | lr {scheduler.get_last_lr()[0]:.6f}")
 
     os.makedirs(os.path.dirname(checkpoint_file), exist_ok=True)
     torch.save({
@@ -297,8 +309,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="microgpt_gpu - PyTorch GPU 加速版 GPT")
     parser.add_argument('--mode', '-m', choices=['train', 'infer', 'help'], default='infer',
                         help='模式: train(训练) / infer(推理) / help(帮助)')
-    parser.add_argument('--steps', '-s', type=int, default=2000,
-                        help='训练步数 (默认 2000)')
+    parser.add_argument('--steps', '-s', type=int, default=5000,
+                        help='训练步数 (默认 5000)')
     parser.add_argument('--samples', type=int, default=20,
                         help='推理样本数 (默认 20)')
     parser.add_argument('--temp', '-t', type=float, default=0.5,
