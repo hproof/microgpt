@@ -12,7 +12,8 @@ import urllib.request
 import argparse
 import pickle
 
-random.seed(11)
+import time
+random.seed(int(time.time()))  # 使用时间种子，每次运行随机
 input_fname = "./input.txt"
 checkpoint_file = "./model.checkpoint"
 

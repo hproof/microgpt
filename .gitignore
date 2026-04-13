@@ -31,5 +31,8 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Model checkpoints
+model.checkpoint
+
 # Logs
 *.log
